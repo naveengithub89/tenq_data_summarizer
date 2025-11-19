@@ -1,0 +1,966 @@
+0. Context & Objectives
+0.1 Problem & Goal
+
+We want a system that, given a ticker symbol, will:
+
+Resolve it to a CIK via company_tickers.json from the SEC. 
+SEC
++1
+
+Locate and download the latest (or specified) 10-Q from EDGAR via data.sec.gov submissions and sec.gov/Archives URLs. 
+SEC
++2
+SEC
++2
+
+Parse the 10-Q (HTML/XBRL/text) into structured, analyzable content.
+
+Extract actionable insights, including:
+
+Core financial metrics (revenue, margins, cash flow, etc.)
+
+Risks and risk trends
+
+Acquisitions / divestitures / restructurings
+
+Notable events / unusual items
+
+Guidance and outlook
+
+Store these insights and relevant text into a vector database for retrieval.
+
+Use pydantic-ai and an agentic architecture (tools + dependencies + structured output) 
+ai.pydantic.dev
++2
+ai.pydantic.dev
++2
+ to:
+
+Retrieve relevant chunks
+
+Synthesize a structured 10-Q summary
+
+Provide a Buy / Sell / Hold style decision + rationale (with clear disclaimers).
+
+Constraints / considerations:
+
+Respect SEC fair access / rate limits (≤10 requests/sec, proper User-Agent). 
+SEC
++2
+Novaworks
++2
+
+System must be modular, testable, and extendable (e.g., 10-K support later).
+
+Pydantic-AI used for:
+
+Structured outputs (Pydantic models)
+
+Agent tools (EDGAR fetch, vector search, calculations)
+
+Dependency injection for shared services (HTTP clients, DB connections). 
+ai.pydantic.dev
++1
+
+1. High-Level Architecture
+1.1 Data Flow (Ticker → Summary)
+
+Input: User provides ticker (e.g., “AAPL”) + optional filing parameters (latest, specific date, etc.).
+
+Ingestion pipeline (can be synchronous in v1):
+
+Resolve ticker → CIK via company_tickers.json.
+
+Fetch company submissions from https://data.sec.gov/submissions/CIK{cik}.json. 
+SEC
++2
+Medium
++2
+
+Identify latest relevant 10-Q.
+
+Download 10-Q primary filing (HTML / text) and, optionally, XBRL for structured financial data.
+
+Parse into logical sections and smaller chunks.
+
+Indexing:
+
+Generate embeddings for chunks.
+
+Store in vector DB with metadata (ticker, CIK, period, section, etc.).
+
+Question/Task layer:
+
+Pydantic-AI Summarizer Agent uses:
+
+Retrieval tools (vector search)
+
+Calculation tools (ratios, growth)
+
+Produces structured output model with:
+
+Financial summary
+
+Risks
+
+Notable events (M&A, legal)
+
+Revenue & profit detail
+
+Decision (Buy/Sell/Hold) + rationale.
+
+Presentation:
+
+API or CLI returns structured JSON, plus optional human-readable textual summary.
+
+1.2 Core Components
+
+EDGAR Client (HTTP + caching + rate limiting)
+
+CIK Resolver (ticker → CIK from company_tickers.json)
+
+Filing Locator (find appropriate 10-Q from submissions JSON)
+
+Filing Downloader & Normalizer
+
+10-Q Parser (section & chunk level)
+
+Vector Store Layer (embedding & retrieval)
+
+Pydantic-AI Agents & Tools
+
+API Layer (HTTP service / CLI wrapper)
+
+Eval / Monitoring (quality checks, logging, metrics)
+
+2. Project Setup & Foundations
+2.1 Repository & Structure
+
+[ ] Decide main stack (Python version, framework for API – e.g., FastAPI or similar).
+[ ] Create repo with baseline structure (example):
+
+app/
+
+config/
+
+edgar/
+
+parsing/
+
+vectorstore/
+
+agents/
+
+api/
+
+tests/
+
+scripts/
+
+infra/ (docker, deployment, etc.)
+
+docs/ (this planning doc, architecture diagrams)
+
+[ ] Define coding standards:
+
+Type hints required
+
+Black/ruff or equivalent formatter/linter
+
+MyPy / pyright for type checking
+
+Docstring conventions
+
+[ ] Add core dependencies:
+
+HTTP client library
+
+Pydantic v2+
+
+Pydantic-AI 
+ai.pydantic.dev
++1
+
+Vector DB client(s)
+
+Test framework (pytest)
+
+Logging (structlog/loguru/standard library)
+
+[ ] Set up .env / config management pattern (for API keys, DB URLs, SEC user agent string, etc.).
+[ ] Add baseline CI pipeline (lint + tests).
+
+3. EDGAR Integration & CIK Resolution (Req. 1–2)
+3.1 EDGAR Access Policies
+
+[ ] Read and capture constraints from SEC “Accessing EDGAR Data” and rate control docs:
+
+Respect ≤ 10 requests/second. 
+SEC
++2
+Novaworks
++2
+
+Use descriptive User-Agent including contact info. 
+SEC
++1
+
+[ ] Decide global config values:
+
+USER_AGENT string
+
+Max RPS and retry/backoff policy
+
+Whether to use local cache for repeated requests
+
+3.2 EDGAR HTTP Client
+
+[ ] Design EdgarHttpClient with responsibilities:
+
+Maintain requests/httpx session
+
+Attach required headers (User-Agent, Accept, etc.)
+
+Centralized rate limiting
+
+Retry logic with backoff
+
+Optional local caching layer (e.g., file or Redis-based) keyed by URL
+
+[ ] Define error handling strategy:
+
+HTTP errors (404, 429, 500+)
+
+Data validation failures (malformed JSON/HTML)
+
+Circuit-breaker rules for repeated failures
+
+[ ] Add unit tests using mocked responses.
+
+3.3 CIK Resolution via company_tickers.json (Req. 1)
+
+company_tickers.json maps integer index → object with fields like ticker, cik_str, and title. 
+Medium
++3
+SEC
++3
+SEC
++3
+
+[ ] Specify CIK resolver interface:
+
+Input: ticker symbol (case-insensitive)
+
+Output: CIK (as zero-padded string and as int), company name
+
+[ ] CIK Resolver Tasks
+
+[ ] Implement fetch of https://www.sec.gov/files/company_tickers.json using EdgarHttpClient.
+[ ] Normalize JSON to in-memory structure (list/dict keyed by ticker).
+[ ] Implement ticker lookup with:
+
+Case normalization
+
+Ticker alias handling (e.g., class shares) – V2 feature, document approach.
+
+[ ] Caching strategy:
+
+Cache mapping in memory with TTL
+
+Optionally persist to file/DB
+
+Background refresh pattern (not required for v1 but design for it)
+
+[ ] Add tests:
+
+Sample fixture for JSON file
+
+Edge cases: unknown ticker, delisted companies, multiple tickers per CIK (if applicable).
+
+3.4 Submissions Endpoint & 10-Q Metadata (Req. 2)
+
+https://data.sec.gov/submissions/CIK{cik}.json contains submission history including form types (10-Q, 10-K, etc.), filing dates, accession numbers. 
+PyPI
++3
+SEC
++3
+SEC
++3
+
+[ ] Define SubmissionsService interface:
+
+Input: CIK (zero-padded string)
+
+Output: structured CompanySubmissions model (Pydantic)
+
+[ ] Parsing tasks:
+
+[ ] Identify field mapping in submissions JSON for:
+
+Recent filings arrays (forms, filing dates, accessions, primary documents, etc.)
+
+Historical data if needed
+
+[ ] Implement filtering logic:
+
+Form type in {10-Q, 10-Q/A} (configurable)
+
+Latest vs. specific period requested (e.g., quarter end date, fiscal year/quarter)
+
+Handle multiple 10-Qs on same date (amendments)
+
+[ ] Define TenQMetadata model with at least:
+
+Ticker
+
+CIK
+
+Company name
+
+Form type
+
+Filing date
+
+Period of report
+
+Accession number
+
+Primary document path
+
+XBRL primary instance document path (if applicable)
+
+[ ] Unit tests:
+
+Use fixtures from real sample JSONs
+
+Edge cases: no 10-Q, only 10-K, restatements, 10-Q/A handling.
+
+3.5 10-Q Download & Storage
+
+10-Q documents usually available under https://www.sec.gov/Archives/edgar/data/{cik_no_zero_pad}/{accession_no_no_dashes}/{primary_doc}. 
+PyPI
++1
+
+[ ] Define FilingDownloader responsibilities:
+
+Build correct URL(s) for:
+
+Primary HTML filing
+
+XBRL instance file(s) (optional for v1)
+
+Download raw content (HTML, XML, text)
+
+Persist to storage (disk or object store) with structured path:
+
+e.g., filings/{ticker}/{cik}/{form}/{accession}/{file}
+
+[ ] Decide on storage backend:
+
+Local FS (for dev)
+
+Pluggable interface (e.g., S3, GCS) for production
+
+[ ] Handle content types:
+
+HTML (typical 10-Q)
+
+Plain text forms
+
+XBRL instance + linkbase files
+
+[ ] Add tests:
+
+Download logic using mocked HTTP
+
+Verify expected storage paths and metadata.
+
+4. 10-Q Parsing & Normalization (Req. 3)
+4.1 Parsing Strategy
+
+[ ] Decide parsing stack:
+
+HTML parsing library
+
+Optional XBRL parser for structured financials (can be phased in)
+
+[ ] Identify key sections to extract for actionable insights (reg-item based):
+
+Part I, Item 1 – Financial Statements
+
+Part I, Item 2 – Management’s Discussion and Analysis (MD&A)
+
+Part I, Item 3 – Quantitative and Qualitative Disclosures About Market Risk
+
+Part II, Item 1A – Risk Factors
+
+Part II, Item 7 etc. (depending on company’s layout, cross-refs)
+
+[ ] Determine section detection approach:
+
+Heading heuristics (e.g., regex on “Item 2. Management’s Discussion and Analysis…”)
+
+DOM structure (header tags, TOC)
+
+Fallbacks for non-standard formatting
+
+4.2 Text Normalization & Chunking
+
+[ ] Implement HTML → clean text conversion:
+
+Strip boilerplate, scripts, styles
+
+Preserve headings, lists, tables where useful
+
+Normalize whitespace, encoding
+
+[ ] Define a chunking strategy for vectorization:
+
+Chunk size (tokens/characters)
+
+Overlap between chunks
+
+Section-aware chunking (keep MD&A, Risk Factors, etc. grouped)
+
+[ ] Define TenQSection and TenQChunk models:
+
+Section name / item number
+
+Filing metadata (ticker, CIK, period)
+
+Raw text
+
+Ordering indices
+
+[ ] Add tests:
+
+Parsing sample filings from a few diverse issuers
+
+Validate section boundaries
+
+Validate chunk counts are reasonable
+
+4.3 Optional: XBRL Financial Extraction (Phase 2)
+
+(Plan now, implementation later.)
+
+[ ] Identify how to use SEC XBRL APIs / XBRL instance files for structured financial statement data. 
+Kaggle
++1
+
+[ ] Decide whether to use existing XBRL libraries vs. custom parsing.
+[ ] Plan mapping from XBRL facts to internal financial metrics (revenue, EPS, segments, cash flow, etc.).
+[ ] Ensure we can link XBRL metrics back to narrative sections.
+
+5. Embeddings & Vector Database (Req. 4–5)
+5.1 Vector DB Selection & Schema
+
+[ ] Choose vector DB for v1 (e.g., pgvector, Qdrant, Pinecone, etc.).
+[ ] Define schema for vector store entries:
+
+Minimum fields per record:
+
+id
+
+ticker
+
+cik
+
+form_type (10-Q, 10-Q/A)
+
+filing_date
+
+period_of_report
+
+accession_number
+
+section_name / item
+
+chunk_index
+
+text
+
+embedding
+
+Extra metadata (e.g., risk-related flag, MD&A vs. notes, etc.)
+
+[ ] Abstract via VectorStore interface:
+
+upsert_chunks(chunks: List[TenQChunk])
+
+search(query_embedding, filters, top_k) → List[ScoredChunk]
+
+5.2 Embedding Generation
+
+[ ] Decide embedding model (e.g., OpenAI, other provider supported by pydantic-ai). 
+ai.pydantic.dev
++1
+
+[ ] Implement EmbeddingService:
+
+Handles batching
+
+Retries and rate limiting
+
+Caches identical text embeddings (optional)
+
+[ ] Decide on embedding configs:
+
+Dimensionality
+
+Normalization (L2)
+
+Text pre-processing consistency (same as chunking)
+
+5.3 Ingestion Pipeline (Ticker → Vector Store)
+
+[ ] Define IngestionPipeline high-level steps:
+
+Resolve ticker → CIK
+
+Fetch submissions JSON and identify target 10-Q
+
+Download 10-Q docs
+
+Parse into sections/chunks
+
+Generate embeddings
+
+Upsert into vector DB with metadata
+
+[ ] Determine idempotency:
+
+Use accession number + section + chunk index as unique keys
+
+Upsert semantics to avoid duplicates if pipeline is re-run
+
+[ ] Logging & metrics:
+
+Record ingestion duration per ticker
+
+Count of chunks, tokens, and errors
+
+[ ] Tests:
+
+End-to-end test using sample 10-Q (mock network, real parsing & vector operations in a test DB)
+
+6. Pydantic-AI Agents & Tools (Req. 6)
+
+We will use pydantic-ai agents to orchestrate higher-level reasoning, with tools to access EDGAR data, vector store, and calculation utilities. 
+ai.pydantic.dev
++3
+ai.pydantic.dev
++3
+ai.pydantic.dev
++3
+
+6.1 Dependencies Design
+
+[ ] Define a Dependencies dataclass (conceptually) for pydantic-ai agents including:
+
+edgar_client / cis_resolver
+
+submissions_service
+
+filing_downloader
+
+tenq_parser
+
+embedding_service
+
+vector_store
+
+Config values (e.g., model names, risk thresholds)
+
+[ ] Ensure all tools and instructions can access dependencies via RunContext.deps.
+
+6.2 Tools (Function Tools)
+
+Define tools as thin wrappers around core services, with clear responsibilities and tight input/output schemas.
+
+Ingestion / Data Tools
+
+[ ] resolve_ticker_tool
+
+Input: ticker
+
+Output: CIK + company name
+
+[ ] get_tenq_metadata_tool
+
+Input: CIK, optional date/quarter selector
+
+Output: TenQMetadata
+
+[ ] ensure_tenq_ingested_tool
+
+Input: Ticker or CIK + filing metadata
+
+Behavior: Runs ingestion pipeline if filing not yet in vector DB
+
+Output: Basic summary of ingestion status (chunks count, etc.)
+
+Retrieval / Analysis Tools
+
+[ ] retrieve_tenq_chunks_tool
+
+Input: ticker/CIK + query + filters (section, risk, financial topics)
+
+Output: List of relevant chunks with metadata
+
+[ ] compute_financial_ratios_tool
+
+Input: structured numeric facts (revenue, EPS, margin, leverage, etc.)
+
+Output: derived metrics (growth rates, margin changes, leverage ratios)
+
+[ ] list_recent_filings_tool (optional v1)
+
+For debugging / introspection, not required for primary user flow.
+
+Ensure each tool has:
+
+Clear description for LLM (when and why to use it)
+
+Pydantic argument schemas
+
+Strong tests.
+
+6.3 Agents
+
+We’ll use modular agents, coordinated via standard Python orchestration (not necessarily a multi-agent conversation).
+
+Agent 1: Ingestion Agent (optional LLM)
+
+[ ] Purpose: Typically, ingestion is deterministic, so may not require an LLM. Keep as code pipeline with its own tasks.
+
+Agent 2: 10-Q Insights Agent
+
+[ ] Responsibilities:
+
+Given a ticker/CIK and (optionally) specific filing date:
+
+Ensure the 10-Q is available in vector store (via ingestion tool).
+
+Retrieve relevant chunks (risk, MD&A, financials, etc.).
+
+Extract:
+
+Key financial metrics
+
+Segment performance
+
+Liquidity / leverage
+
+Risk factors & changes vs. prior periods
+
+M&A / restructurings / notable events
+
+Management guidance & tone
+
+Output a structured insights model (Pydantic) with:
+
+company_profile
+
+filing_metadata
+
+high_level_summary
+
+financial_summary (core metrics, YoY/QoQ changes)
+
+segment_summary (if present)
+
+risk_summary (top N risks, changes vs. previous)
+
+notable_events (acquisitions, divestitures, legal issues, restatements)
+
+liquidity_and_capital_structure
+
+guidance_and_outlook
+
+open_questions / uncertainties
+
+[ ] Define internal prompting guidelines (no code, just content):
+
+Emphasize factual grounding in retrieved chunks
+
+Ask agent to quote sections minimally and synthesize instead
+
+Enforce that any numeric claims must be supported by retrieved text or numeric data
+
+Agent 3: Decision Agent (Buy / Sell / Hold)
+
+[ ] Inputs:
+
+Structured insights from Agent 2
+
+Optional external context (e.g., price, valuation metrics) – can be stubbed initially or added later
+
+[ ] Outputs:
+
+Decision enum: Buy / Sell / Hold
+
+Confidence score (0–1 or Low/Medium/High)
+
+Time horizon for decision (short/medium/long)
+
+Rationale broken into:
+
+Fundamental positives
+
+Fundamental negatives
+
+Key uncertainties
+
+Risk profile
+
+[ ] Include compliance/disclaimer section in output model to make clear this is not investment advice, just an informational summary.
+
+6.4 Agent Orchestration
+
+[ ] Design a top-level orchestrator function / service:
+
+Input: ticker + optional parameters (filing date, language, etc.)
+
+Steps:
+
+Resolve ticker → CIK
+
+Identify relevant 10-Q
+
+Run ingestion (if needed)
+
+Call Insights Agent
+
+Call Decision Agent
+
+Output: Combined response object that includes:
+
+Filing metadata
+
+Structured insights
+
+Decision model
+
+Human-readable summary string (optionally generated by agent or derived from model)
+
+[ ] Decide how to handle multi-run history in pydantic-ai (message histories) for:
+
+Back-and-forth user Q&A on same filing
+
+Following questions that reuse previous retrieval results. 
+ai.pydantic.dev
++2
+ai.pydantic.dev
++2
+
+7. API / Interface Layer
+7.1 External Interface Design
+
+[ ] Decide primary initial interface:
+
+HTTP API (likely)
+
+CLI for internal use / batch processing
+
+[ ] Define API endpoints:
+
+POST /summaries/10q
+
+Body: { "ticker": "...", "filing_date": optional, "force_refresh": optional }
+
+Response: full structured summary + decision
+
+GET /filings/{ticker}/latest-10q
+
+Retrieve metadata that system is using
+
+[ ] Define response schemas in terms of Pydantic models from agents.
+
+[ ] Add authentication & basic rate limiting at API level (if necessary).
+
+7.2 Error Handling & UX
+
+[ ] Standardize error response format:
+
+Code
+
+Message
+
+Details (e.g., “No 10-Q found for ticker X”)
+
+[ ] Common error scenarios:
+
+Unknown ticker
+
+No 10-Q available
+
+SEC API downtime / rate limiting
+
+Vector DB errors
+
+LLM failures/timeouts
+
+[ ] Map technical failures → user-friendly messages with actionable suggestions.
+
+8. Quality, Evaluation, & Testing
+8.1 Automated Testing
+
+[ ] Unit tests:
+
+EDGAR HTTP client & rate limiting
+
+CIK resolver
+
+Submissions parser
+
+10-Q parser (various issuers)
+
+Embedding and vector store integration wrappers
+
+Pydantic models validation (insights, decisions)
+
+[ ] Integration tests:
+
+End-to-end ingestion for at least 2–3 tickers with stable 10-Qs
+
+End-to-end summarization + decision with mocked LLM responses (snapshot tests)
+
+[ ] Regression tests:
+
+For previously validated filings, store expected summary/decision skeleton and confirm we don’t regress formatting/structure.
+
+8.2 LLM Evaluation
+
+[ ] Design small labeled set of 10-Qs with “oracle” human notes:
+
+Key metrics the system must capture
+
+Key risks that must be surfaced
+
+Known acquisitions/notable events within the 10-Q
+
+[ ] Define evaluation criteria:
+
+Coverage – Did the agent identify the main financial drivers?
+
+Faithfulness – Are claims supported by the filing?
+
+Risk completeness – Are top disclosed risks captured?
+
+Decision consistency – When the fundamentals are clearly improving/declining, does decision reflect that direction (even if not “real advice”)?
+
+[ ] Implement internal eval harness:
+
+Run summarizer on labeled filings
+
+Compute heuristics/metrics (e.g., overlap of key items)
+
+Manual review of a sample for qualitative assessment
+
+9. Observability, Logging, and Ops
+9.1 Logging
+
+[ ] Define logging schema:
+
+Request id / correlation id
+
+Ticker, CIK, accession
+
+Steps executed (CIK resolution, submissions fetch, download, parsing, embedding, retrieval, LLM runs)
+
+Timing per step
+
+Errors with stack traces
+
+[ ] Mask sensitive info (API keys, etc.).
+
+9.2 Metrics
+
+[ ] Track core metrics:
+
+Ingestion throughput (filings per hour/day)
+
+Average latency per summarization
+
+Chunk counts per filing
+
+LLM token usage per request
+
+Error rates (by component)
+
+[ ] Decide metric backend (Prometheus/StatsD/etc.).
+
+9.3 Deployment & Environments
+
+[ ] Define environments:
+
+Local dev
+
+Staging (optional)
+
+Production
+
+[ ] Dockerization plan:
+
+Base Python image
+
+Health checks
+
+Config injection (env vars / secrets store)
+
+[ ] SEC SLA considerations:
+
+Safeguards around EDGAR request volume
+
+Backoff behavior when SEC endpoints are degraded
+
+10. Security, Compliance & Safety
+10.1 Data & Compliance
+
+[ ] Document that all primary data is public EDGAR content.
+[ ] Ensure we include appropriate disclaimers:
+
+Outputs are for informational/educational purposes.
+
+Not investment advice; user responsible for decisions.
+
+[ ] Review licensing / ToS of any third-party APIs and vector DB services.
+
+10.2 LLM Safety
+
+[ ] Add guardrails in prompts to:
+
+Avoid hallucinating data not found in filing
+
+Encourage explicit “unknown” / “not disclosed” when applicable
+
+Clearly label the Buy/Sell/Hold as a heuristic signal, not advice.
+
+[ ] Consider adding a secondary “sanity check” agent/tool that validates key numeric values (e.g., revenue, EPS) against parsed data.
+
+11. Roadmap & Phasing
+
+Phase 1 – MVP
+
+[ ] CIK resolution via company_tickers.json.
+[ ] Submissions JSON parsing & 10-Q metadata selection.
+[ ] 10-Q download (HTML only) and basic parsing into sections & chunks.
+[ ] Vector DB integration and retrieval.
+[ ] Single Pydantic-AI Insights Agent that:
+
+Uses vector retrieval
+
+Produces a structured 10-Q summary (no decision yet or very basic).
+
+Phase 2 – Decision & Refinement
+
+[ ] Introduce Decision Agent (buy/sell/hold) with structured output.
+[ ] Improve prompt design for more consistent financial structuring.
+[ ] Add thorough eval harness.
+
+Phase 3 – XBRL & Advanced Analytics
+
+[ ] Integrate XBRL numerical extraction for robust financial metrics.
+[ ] Enhance ratio and trend analysis tools.
+[ ] Extended retrieval (e.g., cross-filing comparisons, multiple quarters).
