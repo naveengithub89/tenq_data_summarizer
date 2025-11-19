@@ -1,0 +1,17 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    container_name: sec-10q-api
+    env_file:
+      - ../.env          # pulls in OPENAI_API_KEY, SEC_USER_AGENT, etc.
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data
+    command: >
+      uvicorn app.api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
