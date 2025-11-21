@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import Sequence
 
 from app.parsing.models import TenQChunk
 from app.vectorstore.base import ScoredChunk, VectorStore
@@ -17,12 +17,17 @@ class _Stored:
 class InMemoryVectorStore(VectorStore):
     """
     Simple in-memory vector store for dev & tests.
+    NOTE: contents disappear when the process restarts.
     """
 
     def __init__(self) -> None:
         self._data: list[_Stored] = []
 
-    async def upsert_chunks(self, chunks: Sequence[TenQChunk], embeddings: list[list[float]]) -> None:
+    async def upsert_chunks(
+        self,
+        chunks: Sequence[TenQChunk],
+        embeddings: list[list[float]],
+    ) -> None:
         for chunk, emb in zip(chunks, embeddings, strict=True):
             self._data.append(_Stored(chunk=chunk, embedding=emb))
 
@@ -44,13 +49,27 @@ class InMemoryVectorStore(VectorStore):
         scored: list[ScoredChunk] = []
         for stored in self._data:
             md = stored.chunk.metadata
-            if ticker and md.ticker != ticker:
+            if ticker and md.ticker.upper() != ticker.upper():
                 continue
             if cik and md.cik != cik:
                 continue
             if section_name and stored.chunk.section_name != section_name:
                 continue
-            scored.append(ScoredChunk(chunk=stored.chunk, score=cos(query_embedding, stored.embedding)))
+
+            scored.append(
+                ScoredChunk(
+                    chunk=stored.chunk,
+                    score=cos(query_embedding, stored.embedding),
+                )
+            )
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[:top_k]
+
+    async def has_accession(self, ticker: str, accession_number: str) -> bool:
+        t = ticker.upper()
+        for stored in self._data:
+            md = stored.chunk.metadata
+            if md.ticker.upper() == t and md.accession_number == accession_number:
+                return True
+        return False
