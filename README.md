@@ -111,6 +111,7 @@ Bash
 ```
 docker compose build
 docker compose up
+cd infra && docker compose run --rm api python -m pytest
 ```
 
 ### 5. Test the Endpoint:
