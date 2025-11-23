@@ -81,12 +81,12 @@ Code snippet
 
 ```
 # SEC EDGAR SETTINGS
-SEC_USER_AGENT="Your Name Contact Info / sec-10q-analyst"
+SEC_USER_AGENT="<Name> <email> / sec-10q-analyst"
 SEC_MAX_RPS=8
 
 # OPENAI / LLM SETTINGS
-OPENAI_API_KEY="sk-..."
-LLM_MODEL="openai:gpt-5"
+OPENAI_API_KEY="<Your API key>"
+LLM_MODEL="openai:gpt-4.1-mini"
 EMBEDDING_MODEL="text-embedding-3-large"
 
 # VECTOR DATABASE SETTINGS (e.g., pgvector)
