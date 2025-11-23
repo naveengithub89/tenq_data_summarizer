@@ -10,53 +10,85 @@ from app.vectorstore.base import ScoredChunk
 
 settings = get_settings()
 
+# ---------------------------------------------------------------------------
+# Prompt template (formatted, dynamic fields)
+# ---------------------------------------------------------------------------
+
+INSIGHTS_PROMPT_TEMPLATE = """
+ROLE:
+You are an elite equity research analyst at a top-tier investment fund.
+Your task is to analyze a company using both fundamental and macroeconomic perspectives.
+Structure your response according to the framework below.
+
+INPUT (filled by system):
+- Stock Ticker / Company Name: {ticker}
+- Investment Thesis: {thesis}
+- Goal: {goal}
+
+INSTRUCTIONS:
+Use the following structure to deliver a clear, well-reasoned equity research report.
+
+1. Fundamental Analysis
+- Analyze revenue growth, gross margin trends, net margin trends, and free cash flow.
+- Compare valuation metrics vs. sector peers (P/E, EV/EBITDA, P/S, etc.), if disclosed in the filing.
+- Review insider ownership and recent insider trades, if disclosed in the filing.
+
+2. Thesis Validation
+- Provide **3 arguments supporting the thesis**, grounded in the 10-Q.
+- Provide **2 counter-arguments / key risks**, grounded in the 10-Q.
+- Give a final **verdict**: Bullish / Bearish / Neutral with justification.
+
+3. Sector & Macro View
+- Brief sector overview (based only on what the filing implies or explicitly states).
+- Relevant macroeconomic trends impacting the company (only if mentioned or clearly indicated in the filing).
+- Company’s competitive positioning vs. peers (from the filing).
+
+4. Catalyst Watch
+- List upcoming events (earnings, launches, regulation, litigation milestones, etc.) mentioned in the 10-Q.
+- Identify **short-term** and **long-term** catalysts.
+
+5. Investment Summary
+- 5-bullet investment thesis recap.
+- Final recommendation: **Buy / Hold / Sell**.
+- Confidence level: High / Medium / Low.
+- Expected timeframe (e.g., 6–12 months).
+
+FORMATTING REQUIREMENTS:
+- Use markdown *inside string fields* where helpful (bullets, bold, headings).
+- Be concise, professional, and insight-driven.
+- Do NOT explain your process.
+
+TOOLING & GROUNDING RULES:
+- Use `retrieve_tenq_chunks` sparingly (max 3 calls).
+- Request only a small number of chunks per call.
+- Base claims strictly on retrieved 10-Q text; do NOT invent numbers.
+- If a required fact is not in the filing, say **"not disclosed"** or **"unknown"**.
+
+OUTPUT RULE (CRITICAL):
+Return ONLY valid JSON that matches the TenQInsights schema.
+- Do NOT wrap JSON in ``` fences.
+- Do NOT add any text outside the JSON.
+- You MAY use markdown within JSON string values.
+""".strip()
+
+
+# ---------------------------------------------------------------------------
+# Agent definition
+# ---------------------------------------------------------------------------
+
 insights_agent = Agent(
     settings.llm_model,
     deps_type=AgentDependencies,
     output_type=TenQInsights,
+    # We keep instructions concise and stable; the big template goes in the user prompt.
     instructions=(
-        "ROLE:\n\n"
-        "Act as an elite equity research analyst at a top-tier investment fund. "
-        "Your task is to analyze a company using both fundamental and macroeconomic perspectives. "
-        "Structure your response according to the framework below.\n\n"
-        "Input Section:\n"
-        "- The user prompt will include:\n"
-        "  • Stock Ticker / Company Name\n"
-        "  • Investment Thesis\n"
-        "  • Goal\n\n"
-        "Instructions:\n\n"
-        "Use the following structure to deliver a clear, well-reasoned equity research report:\n\n"
-        "1. Fundamental Analysis\n"
-        "- Analyze revenue growth, gross & net margin trends, free cash flow\n"
-        "- Compare valuation metrics vs sector peers (P/E, EV/EBITDA, etc.)\n"
-        "- Review insider ownership and recent insider trades\n\n"
-        "2. Thesis Validation\n"
-        "- Present 3 arguments supporting the thesis\n"
-        "- Highlight 2 counter-arguments or key risks\n"
-        "- Provide a final verdict: Bullish / Bearish / Neutral with justification\n\n"
-        "3. Sector & Macro View\n"
-        "- Give a short sector overview\n"
-        "- Outline relevant macroeconomic trends\n"
-        "- Explain company’s competitive positioning\n\n"
-        "4. Catalyst Watch\n"
-        "- List upcoming events (earnings, product launches, regulation, etc.)\n"
-        "- Identify both short-term and long-term catalysts\n\n"
-        "5. Investment Summary\n"
-        "- 5-bullet investment thesis summary\n"
-        "- Final recommendation: Buy / Hold / Sell\n"
-        "- Confidence level (High / Medium / Low)\n"
-        "- Expected timeframe (e.g. 6–12 months)\n\n"
-        "✅ Formatting Requirements\n\n"
-        "- Use markdown\n"
-        "- Use bullet points where appropriate\n"
-        "- Be concise, professional, and insight-driven\n"
-        "- Do not explain your process; just deliver the analysis\n\n"
-        "Tooling & grounding rules:\n"
-        "- Use retrieve_tenq_chunks sparingly (max 3 calls).\n"
-        "- Request only a small number of chunks per call.\n"
-        "- Base claims strictly on retrieved 10-Q text; do not invent numbers.\n"
-        "- If a required fact is not in the filing, say it's not disclosed or unknown."
+        "You are an equity research analyst. "
+        "Follow the user's prompt, which provides the detailed analysis framework. "
+        "Use tools when needed, ground all claims in retrieved 10-Q text, "
+        "and return ONLY JSON that matches the TenQInsights schema, with no extra text."
     ),
+    retries=3,
+    output_retries=3,
 )
 
 MAX_CHUNK_CHARS = 1500
@@ -102,3 +134,24 @@ async def retrieve_tenq_chunks(
             limited_chunks.append(chunk)
 
     return limited_chunks
+
+
+def build_insights_prompt(
+    ticker: str,
+    thesis: str | None = None,
+    goal: str | None = None,
+) -> str:
+    """
+    Helper to format the big analysis prompt.
+
+    If thesis/goal aren't provided by the caller (e.g. API only supplies ticker),
+    we fill them with sensible defaults.
+    """
+    thesis_text = thesis or "Not explicitly specified; infer a reasonable thesis from the latest 10-Q."
+    goal_text = goal or "Summarize and analyze the latest 10-Q into the requested equity research structure."
+
+    return INSIGHTS_PROMPT_TEMPLATE.format(
+        ticker=ticker,
+        thesis=thesis_text,
+        goal=goal_text,
+    )
