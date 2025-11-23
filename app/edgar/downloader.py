@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Optional
 
-import httpx
-
-from app.config.settings import get_settings
 from app.edgar.client import EdgarHttpClient
 from app.edgar.models import TenQMetadata
 from app.edgar.storage import StorageBackend
@@ -27,7 +23,6 @@ class FilingDownloader:
         self._archives_base = "https://www.sec.gov/Archives/edgar/data"
 
     def _build_primary_url(self, metadata: TenQMetadata) -> str:
-        # accession_number example: 0000320193-2024-000010 -> 0000320193/000032019324000010
         cik_no_zero = metadata.cik.lstrip("0")
         accession_nodash = metadata.accession_number.replace("-", "")
         path = PurePosixPath(cik_no_zero) / accession_nodash / metadata.primary_document
@@ -35,7 +30,11 @@ class FilingDownloader:
 
     async def download_primary_html(self, metadata: TenQMetadata) -> str:
         url = self._build_primary_url(metadata)
-        rel_path = f"filings/{metadata.ticker}/{metadata.cik}/{metadata.form_type}/{metadata.accession_number}/{metadata.primary_document}"
+        rel_path = (
+            f"filings/{metadata.ticker}/{metadata.cik}/"
+            f"{metadata.form_type}/{metadata.accession_number}/"
+            f"{metadata.primary_document}"
+        )
 
         if not self._storage.exists(rel_path):
             text = await self._client.get_text(url)
