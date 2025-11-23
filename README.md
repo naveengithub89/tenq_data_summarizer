@@ -111,10 +111,19 @@ Bash
 ```
 docker compose build
 docker compose up
+
+```
+
+### 6. Run the tests
+
+rebuild and restart the docker container
+
+Bash
+```
 cd infra && docker compose run --rm api python -m pytest
 ```
 
-### 5. Test the Endpoint:
+### 7. Test the Endpoint:
 You can test the core functionality via a curl command:
 
 Bash
@@ -126,7 +135,7 @@ curl -X POST "http://localhost:8000/summaries/10q" \
 ```
 
 
-### 6 . Sample Output (Abridged)
+### 8 . Sample Output (Abridged)
 The output is a structured JSON object containing both the detailed insights and the final investment decision.
 
 JSON
